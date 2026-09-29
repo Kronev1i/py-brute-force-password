@@ -1,7 +1,7 @@
 import os
 import time
-import multiprocessing as mp
 from hashlib import sha256
+from multiprocessing import Pool
 
 
 PASSWORDS_TO_BRUTE_FORCE = [
@@ -17,64 +17,53 @@ PASSWORDS_TO_BRUTE_FORCE = [
     "e5f3ff26aa8075ce7513552a9af1882b4fbc2a47a3525000f6eb887ab9622207",
 ]
 
-CHECK_INTERVAL = 50_000
-
 SEARCH_SPACE_SIZE = 10 ** 8
+CHUNK_SIZE = 100_000
 
 
 def sha256_hash_str(to_hash: str) -> str:
     return sha256(to_hash.encode("utf-8")).hexdigest()
 
 
-def worker(start: int, end: int, targets_set: set, found: dict, stop_event) -> None:
-    for number in range(start, end):
-        if number % CHECK_INTERVAL == 0 and stop_event.is_set():
-            return
+def check_chunk(start_num: int) -> dict:
+    local_found = {}
+    targets_set = set(PASSWORDS_TO_BRUTE_FORCE)
 
+    for number in range(start_num, start_num + CHUNK_SIZE):
+        if number >= SEARCH_SPACE_SIZE:
+            break
         candidate = f"{number:08d}"
-        hashed = sha256_hash_str(candidate)
+        if sha256_hash_str(candidate) in targets_set:
+            local_found[sha256_hash_str(candidate)] = candidate
 
-        if hashed in targets_set:
-            found[hashed] = candidate
-            if len(found) >= len(targets_set):
-                stop_event.set()
-                return
+    return local_found
 
 
 def brute_force_password() -> None:
-    targets_set = set(PASSWORDS_TO_BRUTE_FORCE)
     num_workers = os.cpu_count() or 4
-    chunk_size = SEARCH_SPACE_SIZE // num_workers
 
-    manager = mp.Manager()
-    found = manager.dict()
-    stop_event = manager.Event()
+    chunks = range(0, SEARCH_SPACE_SIZE, CHUNK_SIZE)
 
-    processes = []
+    found = {}
     start_time = time.perf_counter()
 
-    for i in range(num_workers):
-        start = i * chunk_size
-        end = SEARCH_SPACE_SIZE if i == num_workers - 1 else (i + 1) * chunk_size
-        p = mp.Process(target=worker, args=(start, end, targets_set, found, stop_event))
-        processes.append(p)
-        p.start()
+    with Pool(processes=num_workers) as pool:
+        for res in pool.imap_unordered(check_chunk, chunks):
+            if res:
+                found.update(res)
 
-    for p in processes:
-        p.join()
+            if len(found) >= len(PASSWORDS_TO_BRUTE_FORCE):
+                pool.terminate()
+                break
 
     elapsed = time.perf_counter() - start_time
 
-    print(f"Cracked {len(found)}/{len(targets_set)} passwords "
-          f"using {num_workers} workers in {elapsed:.2f}s\n")
+    print(
+        f"Cracked {len(found)}/{len(PASSWORDS_TO_BRUTE_FORCE)} passwords using {num_workers} workers in {elapsed:.2f}s\n")
 
     for hashed_password in PASSWORDS_TO_BRUTE_FORCE:
         print(found.get(hashed_password, "NOT FOUND"))
 
 
 if __name__ == "__main__":
-    start_time = time.perf_counter()
     brute_force_password()
-    end_time = time.perf_counter()
-
-    print("Elapsed:", end_time - start_time)
